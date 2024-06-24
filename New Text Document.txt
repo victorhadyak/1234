@@ -1,85 +1,32 @@
 receivers:
-  filelog:
-    include: ["/path/to/your/logfile.log"]
-    start_at: beginning
-    operators:
-      - type: regex_parser
-        regex: '^(?P<timestamp>\S+) (?P<severity>\S+) (?P<message>.*)$'
-        timestamp:
-          parse_from: attributes.timestamp
-          layout: '%Y-%m-%dT%H:%M:%S.%fZ'
-      - type: move
-        from: attributes
-        to: resource
-
-processors:
-  batch:
-  resourcedetection:
-    detectors: ["env", "system"]
-    override: false
-
-exporters:
-  logging:
-    logLevel: debug
-  loki:
-    endpoint: "https://<your-grafana-cloud-endpoint>/loki/api/v1/push"
-    headers:
-      Authorization: "Bearer <your-api-token>"
-    tls:
-      ca_file: "/path/to/your/certificate.pem"
-  prometheus:
-    endpoint: "0.0.0.0:8889"
-    namespace: "default"
-
-service:
-  pipelines:
-    logs:
-      receivers: [filelog]
-      processors: [batch, resourcedetection]
-      exporters: [logging, loki]
-    metrics:
-      receivers: [filelog]
-      processors: [batch, resourcedetection]
-      exporters: [prometheus]
-
-2024-06-18T14:00:00Z INFO Starting process
-2024-06-18T14:01:00Z ERROR Failed to start process
-
-receivers:
-  filelog:
-    include: ["/path/to/your/logfile.log"]
-    start_at: beginning
-    operators:
-      - type: regex_parser
-        regex: '^(?P<timestamp>\S+) (?P<severity>\S+) (?P<message>.*)$'
-        timestamp:
-          parse_from: attributes.timestamp
-          layout: '%Y-%m-%dT%H:%M:%S.%fZ'
-      - type: move
-        from: attributes
-        to: resource
+  otlp:
+    protocols:
+      grpc:
+      http:
 
 processors:
   batch:
     timeout: 5s
+  transform:
+    metric_statements:
+      - context: datapoint
+        statements:
+          # Example of renaming and ensuring metrics are counters
+          - rename(metric.name, "original_metric_name", "new_metric_name")
+          - set(metric.type, "counter")
+          - set(metric.unit, "1")
+          - set(attributes["job"], "my_job")
+          - set(attributes["instance"], "my_instance")
 
 exporters:
-  logging:
-    logLevel: debug
-  otlphttp:
-    endpoint: "https://<User>:<Your-API-Key>@logs-prod-eu-west-0.grafana.net/loki/api/v1/push"
+  prometheusremotewrite:
+    endpoint: "http://<pushgateway_host>:9091/metrics"
     headers:
-      Authorization: "Bearer <Your-API-Key>"
-    tls:
-      ca_file: "/path/to/your/certificate.pem"
+      X-Prometheus-Remote-Write-Version: "0.1.0"
 
 service:
   pipelines:
-    logs:
-      receivers: [filelog]
-      processors: [batch]
-
-2024-06-18T14:00:00Z INFO Starting process
-2024-06-18T14:01:00Z ERROR Failed to start process
-2024-06-18T14:02:00Z INFO Process completed successfully
-      exporters: [logging, otlphttp]
+    metrics:
+      receivers: [otlp]
+      processors: [batch, transform]
+      exporters: [prometheusremotewrite]
