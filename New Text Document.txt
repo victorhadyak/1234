@@ -3,6 +3,12 @@ receivers:
     protocols:
       grpc:
       http:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'otel-collector'
+          static_configs:
+            - targets: ['localhost:5555']
 
 processors:
   batch:
@@ -11,22 +17,23 @@ processors:
     metric_statements:
       - context: datapoint
         statements:
-          # Example of renaming and ensuring metrics are counters
-          - rename(metric.name, "original_metric_name", "new_metric_name")
-          - set(metric.type, "counter")
+          # Example transformation to ensure correct naming
+          - rename(metric.name, "plain_text_metric", "custom_mymonitor")
+          - set(metric.type, "sum")
           - set(metric.unit, "1")
-          - set(attributes["job"], "my_job")
-          - set(attributes["instance"], "my_instance")
+          - set(attributes["job"], "otel_job")
+          - set(attributes["instance"], "otel_instance")
 
 exporters:
+  prometheus:
+    endpoint: "0.0.0.0:9464"
+    namespace: "otel"
   prometheusremotewrite:
-    endpoint: "http://<pushgateway_host>:9091/metrics"
-    headers:
-      X-Prometheus-Remote-Write-Version: "0.1.0"
+    endpoint: "http://<pushgateway_host>:9091/metrics/job/my_job"
 
 service:
   pipelines:
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, prometheus]
       processors: [batch, transform]
-      exporters: [prometheusremotewrite]
+      exporters: [prometheus, prometheusremotewrite]
