@@ -2,27 +2,28 @@ receivers:
   otlp:
     protocols:
       grpc:
+        endpoint: "localhost:5555"
       http:
-  prometheus:
-    config:
-      scrape_configs:
-        - job_name: 'otel-collector'
-          static_configs:
-            - targets: ['localhost:5555']
+        endpoint: "localhost:55681"
 
 processors:
   batch:
     timeout: 5s
   transform:
     metric_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["host.name"])
+          - truncate_all(attributes, 4096)
+      - context: metric
+        statements:
+          - set(description, "Cumulative metric") where type == "Sum"
       - context: datapoint
         statements:
-          # Example transformation to ensure correct naming
-          - rename(metric.name, "plain_text_metric", "custom_mymonitor")
-          - set(metric.type, "sum")
-          - set(metric.unit, "1")
-          - set(attributes["job"], "otel_job")
-          - set(attributes["instance"], "otel_instance")
+          - limit(attributes, 100, ["host.name"])
+          - truncate_all(attributes, 4096)
+          - convert_sum_to_gauge() where metric.name == "custom.my_monitor.counter"
+          - convert_gauge_to_sum("cumulative", false) where metric.name == "custom.my_monitor.counter"
 
 exporters:
   prometheus:
@@ -34,6 +35,6 @@ exporters:
 service:
   pipelines:
     metrics:
-      receivers: [otlp, prometheus]
+      receivers: [otlp]
       processors: [batch, transform]
       exporters: [prometheus, prometheusremotewrite]
