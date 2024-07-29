@@ -1,83 +1,81 @@
+#!/bin/bash
 
-# Environment-specific variables for development and production
-DEV_ACCOUNT="dev-account-id"
-DEV_REGION="dev-region"
-DEV_REPO="dev-repo"
-DEV_REGISTRY="dev-registry"
-DEV_AWS_PROFILE="dev-aws-profile"
+# Variables
+TERRAFORM_VERSION="1.3.5"
+TERRAFORM_ZIP="terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+TERRAFORM_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${TERRAFORM_ZIP}"
+INSTALL_DIR="/usr/local/bin"
+TF_DIR="/tmp/terraform-config"
 
-PROD_ACCOUNT="prod-account-id"
-PROD_REGION="prod-region"
-PROD_REPO="prod-repo"
-PROD_REGISTRY="prod-registry"
-PROD_AWS_PROFILE="prod-aws-profile"
+# Download and install Terraform
+echo "Downloading Terraform..."
+curl -O ${TERRAFORM_URL}
+echo "Installing Terraform..."
+unzip ${TERRAFORM_ZIP}
+sudo mv terraform ${INSTALL_DIR}
+rm ${TERRAFORM_ZIP}
 
-# Function to push image to AWS ECR
-# Parameters:
-# 1. AWS Account ID
-# 2. AWS Region
-# 3. Docker Repository
-# 4. Docker Registry
-# 5. AWS Profile
-push_to_ecr() {
-  local ACCOUNT_ID=$1
-  local REGION=$2
-  local REPO=$3
-  local REGISTRY=$4
-  local AWS_PROFILE=$5
+# Verify installation
+terraform version
 
-  # Tag the Docker image
-  docker tag ${REGISTRY}/${REPO}:${tag} ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO}:${tag}
+# Export Grafana API token as an environment variable
+export TF_VAR_grafana_api_token=$GRAFANA_API_TOKEN
 
-  # Configure AWS CLI with the provided credentials
-  aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
-  aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+# Create a temporary directory for Terraform configuration
+mkdir -p ${TF_DIR}
+cd ${TF_DIR}
 
-  # Log in to AWS ECR
-  echo $(aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com)
-
-  # Push the Docker image to AWS ECR
-  docker push ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO}:${tag}
+# Create Terraform configuration file
+cat <<EOL > main.tf
+provider "grafana" {
+  auth = var.grafana_api_token
+  url  = "https://your-grafana-instance.com"
 }
 
-# Build Docker image
-if [ "$USE_DOCKER_CACHE" == "NO" ]; then
-  docker build --no-cache --pull=true \
-    -t "${registry}/${repo}:latest" \
-    -t "${registry}/${repo}:${timestamp}" \
-    -t "${registry}/${repo}:${tag}" .
-else
-  docker build --pull=true \
-    -t "${registry}/${repo}:latest" \
-    -t "${registry}/${repo}:${timestamp}" \
-    -t "${registry}/${repo}:${tag}" .
-fi
+# Example resource: Create a Grafana Dashboard
+resource "grafana_dashboard" "example" {
+  config_json = <<JSON
+{
+  "title": "Example Dashboard",
+  "panels": [
+    {
+      "type": "text",
+      "title": "Sample Text Panel",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "content": "Hello, world!"
+      }
+    }
+  ]
+}
+JSON
+}
+EOL
 
-# Determine whether to push the image to development or production ECR
-if [ -n "${BUILD_FOR_REGION}" ]; then
-  # Development environment
-  push_to_ecr ${DEV_ACCOUNT} ${DEV_REGION} ${DEV_REPO} ${DEV_REGISTRY} ${DEV_AWS_PROFILE}
-else
-  # Production environment
-  export APISERVER=https://...
-  
-  # Push the Docker images to the main registry
-  docker push ${registry}/${repo}:latest
-  docker push ${registry}/${repo}:${timestamp}
-  docker push ${registry}/${repo}:${tag}
+# Create variables file
+cat <<EOL > variables.tf
+variable "grafana_api_token" {
+  type = string
+}
+EOL
 
-  if [ "${ECR_enable}" == "true" ]; then
-    echo "Push into AWS registry"
-    export AWS_ACCOUNT=${PROD_ACCOUNT}
-    export AWS_REGION=${PROD_REGION}
-    echo "login to AWS"
-    
-    # Generate AWS session and log in
-    aws session generate --role-name ... --account-id ${AWS_ACCOUNT} --profile ${PROD_AWS_PROFILE} 2>&1 >/dev/null
-    $(aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com)
-    
-    # Tag and push the Docker image to the production ECR
-    docker tag ${registry}/${repo}:${tag} ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${repo}:${tag}
-    docker push ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${repo}:${tag}
-  fi
-fi
+# Create Terraform initialization and apply script
+cat <<EOL > apply.sh
+#!/bin/bash
+terraform init
+terraform apply -auto-approve
+EOL
+
+# Make the apply script executable
+chmod +x apply.sh
+
+# Run the Terraform script
+./apply.sh
+
+# Clean up
+rm -rf ${TF_DIR}
