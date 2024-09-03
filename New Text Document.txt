@@ -1,97 +1,46 @@
-pipeline {
-    agent any
+# Configure the AWS provider
+provider "aws" {
+  region = "us-west-2"  # Update to your specific region
+}
 
-    environment {
-        INSTANCE_ID = "i-0123456789abcdef0"  // Replace with your EC2 instance ID
-        REGION = "us-west-2"  // Replace with your AWS region
-        S3_BUCKET = "your-s3-bucket-name"  // Replace with your S3 bucket name
-        S3_KEY = "path/to/your/file.zip"  // Replace with your S3 object key
-        TMP_DIR = "/tmp/unzipped-files"  // Target directory for unzipping
-    }
+# Retrieve the Grafana token from AWS Secrets Manager
+data "aws_secretsmanager_secret_version" "grafana_token" {
+  secret_id = "dev/grafana/token"
+}
 
-    stages {
-        stage('Trigger SSM Command with S3 Copy and Unzip') {
-            steps {
-                script {
-                    // Trigger the SSM command and capture CommandId
-                    def commandId = sh(
-                        script: """
-                        aws ssm send-command \
-                            --instance-ids "${INSTANCE_ID}" \
-                            --document-name "AWS-RunShellScript" \
-                            --parameters '{"commands":[
-                                "aws s3 cp s3://${S3_BUCKET}/${S3_KEY} /tmp/file.zip",
-                                "mkdir -p ${TMP_DIR}",
-                                "unzip /tmp/file.zip -d ${TMP_DIR}",
-                                "echo File copied and unzipped to ${TMP_DIR}"
-                            ]}' \
-                            --query "Command.CommandId" \
-                            --output text \
-                            --region "${REGION}"
-                        """,
-                        returnStdout: true
-                    ).trim()
+# Configure the Grafana provider
+provider "grafana" {
+  url   = "https://your-grafana-instance.com"  # Replace with your Grafana URL
+  auth  = data.aws_secretsmanager_secret_version.grafana_token.secret_string
+}
 
-                    echo "SSM Command triggered. CommandId: ${commandId}"
-
-                    // Save the CommandId for later stages
-                    env.COMMAND_ID = commandId
-                }
-            }
+# Example Grafana dashboard resource
+resource "grafana_dashboard" "example" {
+  config_json = jsonencode({
+    "dashboard" : {
+      "id"      : null,
+      "title"   : "Example Dashboard",
+      "panels"  : [
+        {
+          "type"  : "graph",
+          "title" : "Sample Panel",
+          "gridPos": { "x": 0, "y": 0, "w": 24, "h": 9 }
         }
+      ],
+      "schemaVersion": 16,
+      "version": 0
+    },
+    "overwrite": true
+  })
+}
 
-        stage('Wait for Command Completion') {
-            steps {
-                script {
-                    // Wait for a few seconds to allow the command to execute
-                    sleep(10)  // Adjust based on your command's expected execution time
-                }
-            }
-        }
+# Example output to verify the dashboard ID (Optional)
+output "dashboard_id" {
+  value = grafana_dashboard.example.id
+}
 
-        stage('Retrieve and Display Command Output') {
-            steps {
-                script {
-                    // Retrieve the command output
-                    def commandOutput = sh(
-                        script: """
-                        aws ssm get-command-invocation \
-                            --instance-id "${INSTANCE_ID}" \
-                            --command-id "${COMMAND_ID}" \
-                            --query "StandardOutputContent" \
-                            --output text \
-                            --region "${REGION}"
-                        """,
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Command Output: ${commandOutput}"
-
-                    // Retrieve and display any error output
-                    def commandErrorOutput = sh(
-                        script: """
-                        aws ssm get-command-invocation \
-                            --instance-id "${INSTANCE_ID}" \
-                            --command-id "${COMMAND_ID}" \
-                            --query "StandardErrorContent" \
-                            --output text \
-                            --region "${REGION}"
-                        """,
-                        returnStdout: true
-                    ).trim()
-
-                    if (commandErrorOutput) {
-                        echo "Error Output: ${commandErrorOutput}"
-                        error("SSM command execution encountered an error.")
-                    }
-                }
-            }
-        }
-    }
-
-    post {
-        always {
-            echo "Pipeline completed."
-        }
-    }
+# Optional: Output the Grafana token (Sensitive)
+output "grafana_token" {
+  value     = data.aws_secretsmanager_secret_version.grafana_token.secret_string
+  sensitive = true
 }
