@@ -1,31 +1,89 @@
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ssm:StartSession",
-                "ssm:SendCommand",
-                "ssm:TerminateSession",
-                "ssm:DescribeInstanceInformation",
-                "ssm:GetCommandInvocation"
-            ],
-            "Resource": [
-                "arn:aws:ec2:*:*:instance/*",
-                "arn:aws:ssm:*:*:document/AWS-StartSSHSession",
-                "arn:aws:ssm:*:*:document/AWS-StartPortForwardingSession",
-                "arn:aws:ssm:*:*:document/AWS-RunShellScript",
-                "arn:aws:ssm:*:*:managed-instance/*",
-                "arn:aws:ssm:*:*:session/*"
-            ]
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ec2:DescribeInstances",
-                "ec2:DescribeInstanceStatus"
-            ],
-            "Resource": "*"
+pipeline {
+    agent any
+
+    environment {
+        INSTANCE_ID = "i-0123456789abcdef0"  // Replace with your EC2 instance ID
+        REGION = "us-west-2"  // Replace with your AWS region
+    }
+
+    stages {
+        stage('Trigger SSM Command') {
+            steps {
+                script {
+                    // Trigger the SSM command and capture CommandId
+                    def commandId = sh(
+                        script: """
+                        aws ssm send-command \
+                            --instance-ids "${INSTANCE_ID}" \
+                            --document-name "AWS-RunShellScript" \
+                            --parameters '{"commands":["echo Hello from Jenkins!", "uptime"]}' \
+                            --query "Command.CommandId" \
+                            --output text \
+                            --region "${REGION}"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    echo "SSM Command triggered. CommandId: ${commandId}"
+
+                    // Save the CommandId for later stages
+                    env.COMMAND_ID = commandId
+                }
+            }
         }
-    ]
+
+        stage('Wait for Command Completion') {
+            steps {
+                script {
+                    // Wait for a few seconds to allow the command to execute
+                    sleep(10)  // Adjust based on your command's expected execution time
+                }
+            }
+        }
+
+        stage('Retrieve and Display Command Output') {
+            steps {
+                script {
+                    // Retrieve the command output
+                    def commandOutput = sh(
+                        script: """
+                        aws ssm get-command-invocation \
+                            --instance-id "${INSTANCE_ID}" \
+                            --command-id "${COMMAND_ID}" \
+                            --query "StandardOutputContent" \
+                            --output text \
+                            --region "${REGION}"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Command Output: ${commandOutput}"
+
+                    // Retrieve and display any error output
+                    def commandErrorOutput = sh(
+                        script: """
+                        aws ssm get-command-invocation \
+                            --instance-id "${INSTANCE_ID}" \
+                            --command-id "${COMMAND_ID}" \
+                            --query "StandardErrorContent" \
+                            --output text \
+                            --region "${REGION}"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (commandErrorOutput) {
+                        echo "Error Output: ${commandErrorOutput}"
+                        error("SSM command execution encountered an error.")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline completed."
+        }
+    }
 }
