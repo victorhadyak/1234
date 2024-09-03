@@ -4,10 +4,13 @@ pipeline {
     environment {
         INSTANCE_ID = "i-0123456789abcdef0"  // Replace with your EC2 instance ID
         REGION = "us-west-2"  // Replace with your AWS region
+        S3_BUCKET = "your-s3-bucket-name"  // Replace with your S3 bucket name
+        S3_KEY = "path/to/your/file.zip"  // Replace with your S3 object key
+        TMP_DIR = "/tmp/unzipped-files"  // Target directory for unzipping
     }
 
     stages {
-        stage('Trigger SSM Command') {
+        stage('Trigger SSM Command with S3 Copy and Unzip') {
             steps {
                 script {
                     // Trigger the SSM command and capture CommandId
@@ -16,7 +19,12 @@ pipeline {
                         aws ssm send-command \
                             --instance-ids "${INSTANCE_ID}" \
                             --document-name "AWS-RunShellScript" \
-                            --parameters '{"commands":["echo Hello from Jenkins!", "uptime"]}' \
+                            --parameters '{"commands":[
+                                "aws s3 cp s3://${S3_BUCKET}/${S3_KEY} /tmp/file.zip",
+                                "mkdir -p ${TMP_DIR}",
+                                "unzip /tmp/file.zip -d ${TMP_DIR}",
+                                "echo File copied and unzipped to ${TMP_DIR}"
+                            ]}' \
                             --query "Command.CommandId" \
                             --output text \
                             --region "${REGION}"
