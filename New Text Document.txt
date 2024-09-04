@@ -1,46 +1,185 @@
-# Configure the AWS provider
 provider "aws" {
-  region = "us-west-2"  # Update to your specific region
+  region = "us-west-2"  # Update with your region
 }
 
-# Retrieve the Grafana token from AWS Secrets Manager
-data "aws_secretsmanager_secret_version" "grafana_token" {
-  secret_id = "dev/grafana/token"
+# Data source to get the latest AMI ID you created
+data "aws_ami" "my_custom_ami" {
+  filter {
+    name   = "name"
+    values = ["MyCustomAMI"]
+  }
+
+  owners = ["self"]  # Ensure it retrieves your AMI
+  most_recent = true
 }
 
-# Configure the Grafana provider
-provider "grafana" {
-  url   = "https://your-grafana-instance.com"  # Replace with your Grafana URL
-  auth  = data.aws_secretsmanager_secret_version.grafana_token.secret_string
+# Data source to get the specific VPC and Subnet IDs
+data "aws_vpc" "selected_vpc" {
+  filter {
+    name   = "tag:Name"
+    values = ["your-vpc-name"]  # Replace with your VPC tag name
+  }
 }
 
-# Example Grafana dashboard resource
-resource "grafana_dashboard" "example" {
-  config_json = jsonencode({
-    "dashboard" : {
-      "id"      : null,
-      "title"   : "Example Dashboard",
-      "panels"  : [
-        {
-          "type"  : "graph",
-          "title" : "Sample Panel",
-          "gridPos": { "x": 0, "y": 0, "w": 24, "h": 9 }
-        }
-      ],
-      "schemaVersion": 16,
-      "version": 0
-    },
-    "overwrite": true
+data "aws_subnet_ids" "selected_subnets" {
+  vpc_id = data.aws_vpc.selected_vpc.id
+}
+
+# IAM Role for the EC2 Instance
+resource "aws_iam_role" "ec2_role" {
+  name = "my-ec2-role"
+
+  assume_role_policy = jsonencode({
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Action": "sts:AssumeRole",
+        "Principal": {
+          "Service": "ec2.amazonaws.com"
+        },
+        "Effect": "Allow",
+        "Sid": ""
+      }
+    ]
   })
 }
 
-# Example output to verify the dashboard ID (Optional)
-output "dashboard_id" {
-  value = grafana_dashboard.example.id
+# IAM Policy attached to the IAM Role
+resource "aws_iam_role_policy" "ec2_policy" {
+  name   = "my-ec2-policy"
+  role   = aws_iam_role.ec2_role.id
+  policy = jsonencode({
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:*",
+          "secretsmanager:GetSecretValue",
+          "ec2:Describe*"
+        ],
+        "Resource": "*"
+      }
+    ]
+  })
 }
 
-# Optional: Output the Grafana token (Sensitive)
-output "grafana_token" {
-  value     = data.aws_secretsmanager_secret_version.grafana_token.secret_string
-  sensitive = true
+# EC2 Instance using the AMI
+resource "aws_instance" "my_instance" {
+  ami                         = data.aws_ami.my_custom_ami.id
+  instance_type               = "t2.micro"  # Replace with your desired instance type
+  subnet_id                   = data.aws_subnet_ids.selected_subnets.ids[0]  # Choose the first subnet
+  associate_public_ip_address = true
+  iam_instance_profile        = aws_iam_role.ec2_role.name
+
+  tags = {
+    Name = "MyEC2Instance"
+  }
+}
+
+output "instance_id" {
+  value = aws_instance.my_instance.id
+}
+
+output "public_ip" {
+  value = aws_instance.my_instance.public_ip
+}
+
+pipeline {
+    agent any
+
+    environment {
+        REGION = "us-west-2"  // Replace with your AWS region
+        INSTANCE_TAG = "terraform-instance"  // Replace with your tag value
+        S3_BUCKET = "your-s3-bucket-name"  // Replace with your S3 bucket name
+    }
+
+    stages {
+        stage('Check EC2 Instance') {
+            steps {
+                script {
+                    // Check if the EC2 instance with the specified tag exists and is running
+                    def instanceId = sh(
+                        script: """
+                        aws ec2 describe-instances \
+                            --region ${REGION} \
+                            --filters "Name=tag:Name,Values=${INSTANCE_TAG}" "Name=instance-state-name,Values=running" \
+                            --query "Reservations[*].Instances[*].InstanceId" \
+                            --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (instanceId) {
+                        echo "Found existing running instance: ${instanceId}"
+                        env.INSTANCE_ID = instanceId
+                    } else {
+                        echo "No running instance found, running Terraform to create one."
+
+                        // Run Terraform to create the instance
+                        sh '''
+                        cd /path/to/terraform/code
+                        terraform init
+                        terraform apply -auto-approve
+                        '''
+
+                        // Get the newly created instance ID from Terraform output
+                        instanceId = sh(
+                            script: """
+                            terraform output -raw instance_id
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        echo "Created instance with ID: ${instanceId}"
+                        env.INSTANCE_ID = instanceId
+                    }
+                }
+            }
+        }
+
+        stage('Wait for EC2 Instance to be Ready') {
+            steps {
+                script {
+                    echo "Waiting for instance ${env.INSTANCE_ID} to be in the 'running' state..."
+
+                    sh """
+                    aws ec2 wait instance-running \
+                        --region ${REGION} \
+                        --instance-ids ${env.INSTANCE_ID}
+                    """
+
+                    echo "Instance ${env.INSTANCE_ID} is now running."
+                }
+            }
+        }
+
+        stage('Download and Apply Terraform') {
+            steps {
+                script {
+                    sh '''
+                    # Remove any existing main.tf file to avoid conflicts
+                    rm -f /path/to/terraform/code/main.tf
+                    
+                    # Sync the latest version of the code from S3
+                    aws s3 sync s3://${S3_BUCKET}/path/to/ /path/to/terraform/code/ --exact-timestamps
+
+                    # Verify the contents of the main.tf file (optional)
+                    cat /path/to/terraform/code/main.tf
+
+                    # Initialize and apply Terraform on the running instance
+                    cd /path/to/terraform/code
+                    terraform init
+                    terraform apply -auto-approve
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline completed."
+        }
+    }
 }
