@@ -1,3 +1,356 @@
+# Providers for multiple accounts, using environment variables for keys
+provider "aws" {
+  alias  = "account_1"
+  region = "us-east-1"
+  access_key = var.access_key
+  secret_key = var.secret_key
+}
+
+provider "aws" {
+  alias  = "account_2"
+  region = "us-west-2"
+  access_key = var.access_key
+  secret_key = var.secret_key
+}
+
+# Data source for existing VPC in Account 1
+data "aws_vpc" "existing_vpc_account_1" {
+  provider = aws.account_1
+  filter {
+    name   = "tag:Name"
+    values = ["existing-vpc-name-account-1"]
+  }
+}
+
+# Data source for existing Subnet in Account 1
+data "aws_subnet" "existing_subnet_account_1" {
+  provider = aws.account_1
+  filter {
+    name   = "tag:Name"
+    values = ["existing-subnet-name-account-1"]
+  }
+}
+
+# Data source for existing VPC in Account 2
+data "aws_vpc" "existing_vpc_account_2" {
+  provider = aws.account_2
+  filter {
+    name   = "tag:Name"
+    values = ["existing-vpc-name-account-2"]
+  }
+}
+
+# Data source for existing Subnet in Account 2
+data "aws_subnet" "existing_subnet_account_2" {
+  provider = aws.account_2
+  filter {
+    name   = "tag:Name"
+    values = ["existing-subnet-name-account-2"]
+  }
+}
+
+# EC2 instance in Account 1
+module "ec2_instance_account_1" {
+  source            = "./modules/ec2_instance"
+  providers         = { aws = aws.account_1 }
+  env_name          = "account-1"
+  vpc_id            = data.aws_vpc.existing_vpc_account_1.id
+  subnet_id         = data.aws_subnet.existing_subnet_account_1.id
+  ami               = "ami-0c55b159cbfafe1f0"
+  instance_type     = "t2.micro"
+  user_data_path    = "${path.module}/scripts/user_data.sh"
+}
+
+# EC2 instance in Account 2
+module "ec2_instance_account_2" {
+  source            = "./modules/ec2_instance"
+  providers         = { aws = aws.account_2 }
+  env_name          = "account-2"
+  vpc_id            = data.aws_vpc.existing_vpc_account_2.id
+  subnet_id         = data.aws_subnet.existing_subnet_account_2.id
+  ami               = "ami-0c55b159cbfafe1f0"
+  instance_type     = "t2.micro"
+  user_data_path    = "${path.module}/scripts/user_data.sh"
+}
+
+
+variable "env_name" {
+  description = "Environment name to identify resources (e.g., dev, prod)."
+  type        = string
+}
+
+variable "vpc_id" {
+  description = "The ID of the existing VPC."
+  type        = string
+}
+
+variable "subnet_id" {
+  description = "The ID of the existing subnet."
+  type        = string
+}
+
+variable "ami" {
+  description = "The AMI ID for the EC2 instance."
+  type        = string
+}
+
+variable "instance_type" {
+  description = "The type of the EC2 instance (e.g., t2.micro)."
+  type        = string
+}
+
+variable "user_data_path" {
+  description = "The path to the user data script."
+  type        = string
+}
+
+
+# Security Group
+resource "aws_security_group" "sg" {
+  vpc_id = var.vpc_id
+  name   = "${var.env_name}-sg"
+
+  # No inbound rules (inbound default denied)
+
+  # Allow all outbound traffic
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# IAM Role for EC2
+resource "aws_iam_role" "iam_role" {
+  name = "${var.env_name}-ec2-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# IAM Policy Attachment
+resource "aws_iam_policy" "iam_policy" {
+  name = "${var.env_name}-ec2-policy"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = ["s3:GetObject", "s3:ListBucket"],
+        Effect = "Allow",
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "policy_attachment" {
+  role       = aws_iam_role.iam_role.name
+  policy_arn = aws_iam_policy.iam_policy.arn
+}
+
+# Instance Profile for EC2
+resource "aws_iam_instance_profile" "instance_profile" {
+  name = "${var.env_name}-instance-profile"
+  role = aws_iam_role.iam_role.name
+}
+
+# EC2 Instance
+resource "aws_instance" "ec2" {
+  ami                    = var.ami
+  instance_type          = var.instance_type
+  subnet_id              = var.subnet_id
+  security_group_ids     = [aws_security_group.sg.id]
+  iam_instance_profile   = aws_iam_instance_profile.instance_profile.name
+
+  # Load the user data from an external script file
+  user_data = file(var.user_data_path)
+
+  tags = {
+    Name = "${var.env_name}-ec2"
+  }
+}
+
+
+.
+├── modules
+│   └── ec2_instance
+│       ├── main.tf
+│       ├── variables.tf
+│       ├── outputs.tf
+├── scripts
+│   └── user_data.sh
+├── main.tf
+├── variables.tf
+├── outputs.tf
+
+# Providers for multiple accounts, using environment variables for keys
+provider "aws" {
+  alias  = "account_1"
+  region = "us-east-1"
+  access_key = var.access_key
+  secret_key = var.secret_key
+}
+
+provider "aws" {
+  alias  = "account_2"
+  region = "us-west-2"
+  access_key = var.access_key
+  secret_key = var.secret_key
+}
+
+# Data source for existing VPC in Account 1
+data "aws_vpc" "existing_vpc_account_1" {
+  provider = aws.account_1
+  filter {
+    name   = "tag:Name"
+    values = ["existing-vpc-name-account-1"]
+  }
+}
+
+# Data source for existing Subnet in Account 1
+data "aws_subnet" "existing_subnet_account_1" {
+  provider = aws.account_1
+  filter {
+    name   = "tag:Name"
+    values = ["existing-subnet-name-account-1"]
+  }
+}
+
+# Data source for existing VPC in Account 2
+data "aws_vpc" "existing_vpc_account_2" {
+  provider = aws.account_2
+  filter {
+    name   = "tag:Name"
+    values = ["existing-vpc-name-account-2"]
+  }
+}
+
+# Data source for existing Subnet in Account 2
+data "aws_subnet" "existing_subnet_account_2" {
+  provider = aws.account_2
+  filter {
+    name   = "tag:Name"
+    values = ["existing-subnet-name-account-2"]
+  }
+}
+
+# EC2 instance in Account 1
+module "ec2_instance_account_1" {
+  source            = "./modules/ec2_instance"
+  providers         = { aws = aws.account_1 }
+  env_name          = "account-1"
+  vpc_id            = data.aws_vpc.existing_vpc_account_1.id
+  subnet_id         = data.aws_subnet.existing_subnet_account_1.id
+  ami               = "ami-0c55b159cbfafe1f0"
+  instance_type     = "t2.micro"
+  user_data_path    = "${path.module}/scripts/user_data.sh"
+}
+
+# EC2 instance in Account 2
+module "ec2_instance_account_2" {
+  source            = "./modules/ec2_instance"
+  providers         = { aws = aws.account_2 }
+  env_name          = "account-2"
+  vpc_id            = data.aws_vpc.existing_vpc_account_2.id
+  subnet_id         = data.aws_subnet.existing_subnet_account_2.id
+  ami               = "ami-0c55b159cbfafe1f0"
+  instance_type     = "t2.micro"
+  user_data_path    = "${path.module}/scripts/user_data.sh"
+}
+
+variable "access_key" {
+  description = "AWS Access Key"
+  type        = string
+  sensitive   = true
+}
+
+variable "secret_key" {
+  description = "AWS Secret Key"
+  type        = string
+  sensitive   = true
+}
+
+
+pipeline {
+    agent any
+
+    environment {
+        AWS_ACCESS_KEY = credentials('aws-access-key-id')  // Jenkins credentials ID for AWS Access Key
+        AWS_SECRET_KEY = credentials('aws-secret-access-key')  // Jenkins credentials ID for AWS Secret Key
+    }
+
+    stages {
+        stage('Terraform Init') {
+            steps {
+                script {
+                    sh 'terraform init'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                script {
+                    sh """
+                    terraform plan \
+                    -var 'access_key=${AWS_ACCESS_KEY}' \
+                    -var 'secret_key=${AWS_SECRET_KEY}'
+                    """
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                script {
+                    sh """
+                    terraform apply -auto-approve \
+                    -var 'access_key=${AWS_ACCESS_KEY}' \
+                    -var 'secret_key=${AWS_SECRET_KEY}'
+                    """
+                }
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when {
+                expression { return params.DESTROY }
+            }
+            steps {
+                script {
+                    sh """
+                    terraform destroy -auto-approve \
+                    -var 'access_key=${AWS_ACCESS_KEY}' \
+                    -var 'secret_key=${AWS_SECRET_KEY}'
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()  // Clean up workspace after build
+        }
+        success {
+            echo 'Terraform successfully applied!'
+        }
+        failure {
+            echo 'Terraform apply failed.'
+        }
+    }
+}
 provider "aws" {
   region = "us-west-2"  # Update with your region
 }
