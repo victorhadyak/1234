@@ -536,3 +536,104 @@ pipeline {
         }
     }
 }
+
+
+pipeline {
+    agent any
+
+    environment {
+        REGION = "us-west-2"  // Replace with your AWS region
+        INSTANCE_TAG = "terraform-instance"  // Replace with your tag value
+        S3_BUCKET = "your-s3-bucket-name"  // Replace with your S3 bucket name
+        INSTANCE_ID = ""  // Placeholder for the EC2 instance ID
+    }
+
+    stages {
+        stage('Check EC2 Instance') {
+            steps {
+                script {
+                    // Check if the EC2 instance with the specified tag exists and is running
+                    def instanceId = sh(
+                        script: """
+                        aws ec2 describe-instances \
+                            --region ${REGION} \
+                            --filters "Name=tag:Name,Values=${INSTANCE_TAG}" "Name=instance-state-name,Values=running" \
+                            --query "Reservations[*].Instances[*].InstanceId" \
+                            --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (instanceId) {
+                        echo "Found existing running instance: ${instanceId}"
+                        env.INSTANCE_ID = instanceId
+                    } else {
+                        echo "No running instance found, running Terraform to create one."
+
+                        // Run Terraform to create the instance with required tags
+                        sh '''
+                        cd /path/to/terraform/code
+                        terraform init
+                        terraform apply -auto-approve
+                        '''
+
+                        // Get the newly created instance ID from Terraform output
+                        instanceId = sh(
+                            script: """
+                            terraform output -raw instance_id
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        echo "Created instance with ID: ${instanceId}"
+                        env.INSTANCE_ID = instanceId
+                    }
+                }
+            }
+        }
+
+        stage('Wait for EC2 Instance to be Ready') {
+            steps {
+                script {
+                    echo "Waiting for instance ${env.INSTANCE_ID} to be in the 'running' state..."
+
+                    sh """
+                    aws ec2 wait instance-running \
+                        --region ${REGION} \
+                        --instance-ids ${env.INSTANCE_ID}
+                    """
+
+                    echo "Instance ${env.INSTANCE_ID} is now running."
+                }
+            }
+        }
+
+        stage('Download and Apply Additional Terraform Config') {
+            steps {
+                script {
+                    sh '''
+                    # Remove any existing Terraform configuration to avoid conflicts
+                    rm -f /path/to/terraform/code/main.tf
+                    
+                    # Sync the latest version of the code from S3
+                    aws s3 sync s3://${S3_BUCKET}/path/to/ /path/to/terraform/code/ --exact-timestamps
+
+                    # Verify the contents of the main.tf file (optional)
+                    cat /path/to/terraform/code/main.tf
+
+                    # Initialize and apply Terraform on the running instance
+                    cd /path/to/terraform/code
+                    terraform init
+                    terraform apply -auto-approve
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline completed."
+        }
+    }
+}
